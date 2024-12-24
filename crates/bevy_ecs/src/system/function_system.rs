@@ -11,12 +11,12 @@ use crate::{
     world::{unsafe_world_cell::UnsafeWorldCell, DeferredWorld, World, WorldId},
 };
 
-use alloc::borrow::Cow;
+use alloc::{borrow::Cow, vec, vec::Vec};
 use core::marker::PhantomData;
 use variadics_please::all_tuples;
 
 #[cfg(feature = "trace")]
-use bevy_utils::tracing::{info_span, Span};
+use tracing::{info_span, Span};
 
 use super::{In, IntoSystem, ReadOnlySystem, SystemParamBuilder};
 
@@ -60,7 +60,7 @@ impl SystemMeta {
             is_send: true,
             has_deferred: false,
             last_run: Tick::new(0),
-            param_warn_policy: ParamWarnPolicy::Once,
+            param_warn_policy: ParamWarnPolicy::Panic,
             #[cfg(feature = "trace")]
             system_span: info_span!("system", name = name),
             #[cfg(feature = "trace")]
@@ -110,7 +110,7 @@ impl SystemMeta {
     }
 
     /// Marks the system as having deferred buffers like [`Commands`](`super::Commands`)
-    /// This lets the scheduler insert [`apply_deferred`](`crate::prelude::apply_deferred`) systems automatically.
+    /// This lets the scheduler insert [`ApplyDeferred`](`crate::prelude::ApplyDeferred`) systems automatically.
     #[inline]
     pub fn set_has_deferred(&mut self) {
         self.has_deferred = true;
@@ -136,11 +136,62 @@ impl SystemMeta {
     {
         self.param_warn_policy.try_warn::<P>(&self.name);
     }
+
+    /// Archetype component access that is used to determine which systems can run in parallel with each other
+    /// in the multithreaded executor.
+    ///
+    /// We use an [`ArchetypeComponentId`] as it is more precise than just checking [`ComponentId`]:
+    /// for example if you have one system with `Query<&mut A, With<B>`, and one system with `Query<&mut A, Without<B>`,
+    /// they conflict if you just look at the [`ComponentId`];
+    /// but no archetype that matches the first query will match the second and vice versa,
+    /// which means there's no risk of conflict.
+    #[inline]
+    pub fn archetype_component_access(&self) -> &Access<ArchetypeComponentId> {
+        &self.archetype_component_access
+    }
+
+    /// Returns a mutable reference to the [`Access`] for [`ArchetypeComponentId`].
+    /// This is used to determine which systems can run in parallel with each other
+    /// in the multithreaded executor.
+    ///
+    /// We use an [`ArchetypeComponentId`] as it is more precise than just checking [`ComponentId`]:
+    /// for example if you have one system with `Query<&mut A, With<B>`, and one system with `Query<&mut A, Without<B>`,
+    /// they conflict if you just look at the [`ComponentId`];
+    /// but no archetype that matches the first query will match the second and vice versa,
+    /// which means there's no risk of conflict.
+    ///
+    /// # Safety
+    ///
+    /// No access can be removed from the returned [`Access`].
+    #[inline]
+    pub unsafe fn archetype_component_access_mut(&mut self) -> &mut Access<ArchetypeComponentId> {
+        &mut self.archetype_component_access
+    }
+
+    /// Returns a reference to the [`FilteredAccessSet`] for [`ComponentId`].
+    /// Used to check if systems and/or system params have conflicting access.
+    #[inline]
+    pub fn component_access_set(&self) -> &FilteredAccessSet<ComponentId> {
+        &self.component_access_set
+    }
+
+    /// Returns a mutable reference to the [`FilteredAccessSet`] for [`ComponentId`].
+    /// Used internally to statically check if systems have conflicting access.
+    ///
+    /// # Safety
+    ///
+    /// No access can be removed from the returned [`FilteredAccessSet`].
+    #[inline]
+    pub unsafe fn component_access_set_mut(&mut self) -> &mut FilteredAccessSet<ComponentId> {
+        &mut self.component_access_set
+    }
 }
 
 /// State machine for emitting warnings when [system params are invalid](System::validate_param).
 #[derive(Clone, Copy)]
 pub enum ParamWarnPolicy {
+    /// Stop app with a panic.
+    Panic,
     /// No warning should ever be emitted.
     Never,
     /// The warning will be emitted once and status will update to [`Self::Never`].
@@ -151,6 +202,7 @@ impl ParamWarnPolicy {
     /// Advances the warn policy after validation failed.
     #[inline]
     fn advance(&mut self) {
+        // Ignore `Panic` case, because it stops execution before this function gets called.
         *self = Self::Never;
     }
 
@@ -160,15 +212,21 @@ impl ParamWarnPolicy {
     where
         P: SystemParam,
     {
-        if matches!(self, Self::Never) {
-            return;
+        match self {
+            Self::Panic => panic!(
+                "{0} could not access system parameter {1}",
+                name,
+                disqualified::ShortName::of::<P>()
+            ),
+            Self::Once => {
+                log::warn!(
+                    "{0} did not run because it requested inaccessible system parameter {1}",
+                    name,
+                    disqualified::ShortName::of::<P>()
+                );
+            }
+            Self::Never => {}
         }
-
-        bevy_utils::tracing::warn!(
-            "{0} did not run because it requested inaccessible system parameter {1}",
-            name,
-            disqualified::ShortName::of::<P>()
-        );
     }
 }
 
@@ -182,6 +240,11 @@ where
 {
     /// Set warn policy.
     fn with_param_warn_policy(self, warn_policy: ParamWarnPolicy) -> FunctionSystem<M, F>;
+
+    /// Warn only once about invalid system parameters.
+    fn param_warn_once(self) -> FunctionSystem<M, F> {
+        self.with_param_warn_policy(ParamWarnPolicy::Once)
+    }
 
     /// Disable all param warnings.
     fn never_param_warn(self) -> FunctionSystem<M, F> {
