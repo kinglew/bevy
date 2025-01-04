@@ -8,8 +8,12 @@ use derive_more::derive::Into;
 
 #[cfg(feature = "bevy_reflect")]
 use bevy_reflect::Reflect;
+
 #[cfg(all(feature = "serialize", feature = "bevy_reflect"))]
 use bevy_reflect::{ReflectDeserialize, ReflectSerialize};
+
+#[cfg(all(debug_assertions, feature = "std"))]
+use std::eprintln;
 
 /// An error indicating that a direction is invalid.
 #[derive(Debug, PartialEq)]
@@ -936,7 +940,7 @@ mod tests {
         // `dir_a` should've gotten denormalized, meanwhile `dir_b` should stay normalized.
         assert!(
             !dir_a.is_normalized(),
-            "Dernormalization doesn't work, test is faulty"
+            "Denormalization doesn't work, test is faulty"
         );
         assert!(dir_b.is_normalized(), "Renormalisation did not work.");
     }
@@ -1007,7 +1011,7 @@ mod tests {
         // `dir_a` should've gotten denormalized, meanwhile `dir_b` should stay normalized.
         assert!(
             !dir_a.is_normalized(),
-            "Dernormalization doesn't work, test is faulty"
+            "Denormalization doesn't work, test is faulty"
         );
         assert!(dir_b.is_normalized(), "Renormalisation did not work.");
     }
@@ -1078,7 +1082,7 @@ mod tests {
         // `dir_a` should've gotten denormalized, meanwhile `dir_b` should stay normalized.
         assert!(
             !dir_a.is_normalized(),
-            "Dernormalization doesn't work, test is faulty"
+            "Denormalization doesn't work, test is faulty"
         );
         assert!(dir_b.is_normalized(), "Renormalisation did not work.");
     }
